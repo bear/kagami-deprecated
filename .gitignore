@@ -11,6 +11,12 @@ bin
 var
 sdist
 develop-eggs
+include
+lib
+
+# PyCharm
+.Python
+.idea
 .installed.cfg
 
 # Installer logs

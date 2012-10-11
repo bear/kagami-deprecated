@@ -26,13 +26,10 @@
         bear    Mike Taylor <bear@code-bear.com>
 """
 
-import os
+import os,sys
 import json
 import time
-import glob
-import stat
 import types
-import errno
 import logging
 import datetime
 
@@ -41,10 +38,14 @@ from optparse import OptionParser
 from logging.handlers import RotatingFileHandler
 from multiprocessing import Process, Queue, get_logger
 
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+
 import zmq
 
+
 _version_   = u'0.4.0'
-_copyright_ = u'Copyright (c) 2009 - 2012 Mike Taylor'
+_copyright_ = u'Copyright (c) 2012 Mike Taylor'
 _license_   = u'BSD 2-Clause'
 
 log      = get_logger()
@@ -172,145 +173,6 @@ def initLogs(options, chatty=True, loglevel=logging.INFO):
     else:
         log.setLevel(loglevel)
 
-
-# hacked and borrowed from Beaver
-
-class Watcher(object):
-    def __init__(self, files, outbound, tail_lines=0):
-        self.files_map = {}
-        self.outbound  = outbound
-        self.files     = files
-
-        self.update_files()
-        # The first time we run the script we move all file markers at EOF.
-        # In case of files created afterwards we don't do this.
-        for id, file in self.files_map.iteritems():
-            file.seek(os.path.getsize(file.name))  # EOF
-            if tail_lines:
-                lines = self.tail(file.name, tail_lines)
-                if lines:
-                    self.outbound.put((file.name, lines))
-
-    def __del__(self):
-        self.close()
-
-    def loop(self, interval=0.1, async=False):
-        """Start the loop.
-        If async is True make one loop then return.
-        """
-        while 1:
-            self.update_files()
-            for fid, file in list(self.files_map.iteritems()):
-                self.readfile(file)
-            if async:
-                return
-            time.sleep(interval)
-
-    @staticmethod
-    def tail(fname, window):
-        """Read last N lines from file fname."""
-        try:
-            f = open(fname, 'r')
-        except IOError, err:
-            if err.errno == errno.ENOENT:
-                return []
-            else:
-                raise
-        else:
-            BUFSIZ = 1024
-            f.seek(0, os.SEEK_END)
-            fsize = f.tell()
-            block = -1
-            data = ""
-            exit = False
-            while not exit:
-                step = (block * BUFSIZ)
-                if abs(step) >= fsize:
-                    f.seek(0)
-                    exit = True
-                else:
-                    f.seek(step, os.SEEK_END)
-                data = f.read().strip()
-                if data.count('\n') >= window:
-                    break
-                else:
-                    block -= 1
-            return data.splitlines()[-window:]
-
-    def update_files(self):
-        ls = []
-        files = []
-        if len(self.files) > 0:
-            for name in self.files:
-                files.extend([os.path.realpath(globbed) for globbed in glob.glob(name)])
-
-        for absname in files:
-            try:
-                st = os.stat(absname)
-            except EnvironmentError, err:
-                if err.errno != errno.ENOENT:
-                    raise
-            else:
-                if not stat.S_ISREG(st.st_mode):
-                    continue
-                fid = self.get_file_id(st)
-                ls.append((fid, absname))
-
-        # check existent files
-        for fid, file in list(self.files_map.iteritems()):
-            try:
-                st = os.stat(file.name)
-            except EnvironmentError, err:
-                if err.errno == errno.ENOENT:
-                    self.unwatch(file, fid)
-                else:
-                    raise
-            else:
-                if fid != self.get_file_id(st):
-                    # same name but different file (rotation); reload it.
-                    self.unwatch(file, fid)
-                    self.watch(file.name)
-
-        # add new ones
-        for fid, fname in ls:
-            if fid not in self.files_map:
-                self.watch(fname)
-
-    def readfile(self, file):
-        lines = file.readlines()
-        if lines:
-            self.outbound.put((file.name, lines))
-
-    def watch(self, fname):
-        try:
-            file = open(fname, "r")
-            fid = self.get_file_id(os.stat(fname))
-        except EnvironmentError, err:
-            if err.errno != errno.ENOENT:
-                raise
-        else:
-            log.info("[{0}] - watching logfile {1}".format(fid, fname))
-            self.files_map[fid] = file
-
-    def unwatch(self, file, fid):
-        # file no longer exists; if it has been renamed
-        # try to read it for the last time in case the
-        # log rotator has written something in it.
-        lines = self.readfile(file)
-        log.info("[{0}] - un-watching logfile {1}".format(fid, file.name))
-        del self.files_map[fid]
-        if lines:
-            self.outbound.put((file.name, lines))
-
-    @staticmethod
-    def get_file_id(st):
-        return "%xg%x" % (st.st_dev, st.st_ino)
-
-    def close(self):
-        for id, file in self.files_map.iteritems():
-            file.close()
-        self.files_map.clear()
-
 def zmqSender(options, events):
     log.info('starting sender')
 
@@ -388,6 +250,61 @@ def zmqReceiver(options, events):
             log.error('error raised during recv()', exc_info=True)
             break
 
+class WatchFileEventHandler(FileSystemEventHandler):
+    def __init__(self, filename, queue=None):
+        super(FileSystemEventHandler, self).__init__()
+        self.queue    = queue
+        self.filename = os.path.abspath(filename)
+        self.file     = os.path.basename(self.filename)
+        self.path     = os.path.dirname(self.filename)
+        self.buffer   = ''
+
+        if os.path.exists(self.filename):
+            self.handle = open(self.filename, 'rb')
+            self.handle.seek(0, os.SEEK_END)
+
+    def on_any_event(self, event):
+        if not event._is_directory and (os.path.basename(event._src_path) == self.file):
+            log.debug('watched file event: [%s] %s' % (event._src_path, event._event_type))
+
+            data  = self.handle.read()
+            lines = data.split('\n')
+            if len(self.buffer) > 0:
+                lines[0] = '%s%s' % (self.buffer, lines[0])
+            if lines[-1]:
+                self.buffer = lines[-1]
+                lines.pop()
+
+            if self.queue is None:
+                print len(lines), '[%s]' % self.buffer
+                for line in lines:
+                    print self.file, self.path, line
+            else:
+                self.queue.put((self.file, self.path, lines))
+
+
+def watcher(options, events):
+    observer = Observer()
+    watchers = {}
+
+    for file in options.files:
+        if os.path.exists(file):
+            watchers[file] = WatchFileEventHandler(file)
+            observer.schedule(watchers[file], watchers[file].path, recursive=False)
+        else:
+            log.error('File and/or path does not exist: %s' % file)
+
+    observer.start()
+
+    try:
+        while True:
+            time.sleep(5)
+    except KeyboardInterrupt:
+        observer.stop()
+
+    observer.join()
+
+
 
 _defaultOptions = { 'config':      ('-c', '--config',     None,  'Configuration file'),
                     'debug':       ('-d', '--debug',      True,  'Enable Debug'),
@@ -411,6 +328,5 @@ if __name__ == '__main__':
     if options.client:
         Process(name='rp-client', target=zmqSender, args=(options, outbound)).start()
 
-    if options.client:
-        w = Watcher(options.files, outbound)
-        w.loop()
+        Process(name='watcher', target=watcher, args=(options, outbound)).start()
+
