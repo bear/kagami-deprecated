@@ -199,16 +199,17 @@ def zmqSender(options, events):
 
                     log.debug('sending %s' % filename)
                     for line in lines:
-                        payload = json.dumps({'@source': "file://{0}{1}".format('app1', filename),
-                                              '@type': 'linux-syslog',
-                                              '@tags': [],
-                                              '@fields': {},
-                                              '@timestamp': timestamp,
-                                              '@source_host': 'app1',
-                                              '@source_path': filename,
-                                              '@message': line.strip(os.linesep),
-                                             })
-                        sender.send(payload)
+                        if len(line) > 0:
+                            payload = json.dumps({'@source': "file://{0}{1}".format('app1', filename),
+                                                  '@type': 'linux-syslog',
+                                                  '@tags': [],
+                                                  '@fields': {},
+                                                  '@timestamp': timestamp,
+                                                  '@source_host': 'app1',
+                                                  '@source_path': filename,
+                                                  '@message': line.strip(os.linesep),
+                                                 })
+                            sender.send(payload)
                 except:
                     log.error('Error during send() - exiting', exc_info=True)
                     break
@@ -271,7 +272,7 @@ class WatchFileEventHandler(FileSystemEventHandler):
                 for line in lines:
                     print self.file, self.path, line
             else:
-                self.queue.put((self.file, self.path, lines))
+                self.queue.put((event._src_path, lines))
 
 
 def watcher(options, events):
@@ -280,7 +281,7 @@ def watcher(options, events):
 
     for file in options.files:
         if os.path.exists(file):
-            watchers[file] = WatchFileEventHandler(file)
+            watchers[file] = WatchFileEventHandler(file, events)
             observer.schedule(watchers[file], watchers[file].path, recursive=False)
         else:
             log.error('File and/or path does not exist: %s' % file)
