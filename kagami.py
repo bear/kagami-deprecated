@@ -2,6 +2,10 @@
 
 """ Logstash Proxy
 
+    Process local log file updates using watchdog's inotify
+    events and send via zeromq any new lines to a remote
+    logstash service
+
     :copyright: (c) 2012 by Mike Taylor
     :license: BSD 2-Clause
 
@@ -18,9 +22,6 @@
                             default: None
         -b --background     Fork to a daemon process
                             default: False
-
-    Sample Configuration file
-
 
     Authors:
         bear    Mike Taylor <bear@code-bear.com>
@@ -158,7 +159,7 @@ def initLogs(options, chatty=True, loglevel=logging.INFO):
         echoHandler = logging.StreamHandler()
 
         if chatty:
-            echoFormatter = logging.Formatter('%(levelname)-7s %(processName)s: %(message)s')
+            echoFormatter = logging.Formatter('%(levelname)-7s %(processName)s[%(process)d]: %(message)s')
         else:
             echoFormatter = logging.Formatter('%(levelname)-7s %(message)s')
 
@@ -190,40 +191,30 @@ def zmqSender(options, events):
     while True:
         try:
             event = events.get(False)
+
+            if event is not None:
+                try:
+                    filename, lines = event
+                    timestamp       = datetime.datetime.utcnow().isoformat()
+
+                    log.debug('sending %s' % filename)
+                    for line in lines:
+                        payload = json.dumps({'@source': "file://{0}{1}".format('app1', filename),
+                                              '@type': 'linux-syslog',
+                                              '@tags': [],
+                                              '@fields': {},
+                                              '@timestamp': timestamp,
+                                              '@source_host': 'app1',
+                                              '@source_path': filename,
+                                              '@message': line.strip(os.linesep),
+                                             })
+                        sender.send(payload)
+                except:
+                    log.error('Error during send() - exiting', exc_info=True)
+                    break
+
         except Empty:
-            event = None
-
-        if event is not None:
-            try:
-                filename, lines = event
-                timestamp = datetime.datetime.utcnow().isoformat()
-#                {"@source":"file://li511-207/var/log/syslog",
-#                 "@type":"linux-syslog",
-#                 "@tags":[],
-#                 "@fields":{},
-#                 "@timestamp":"2012-10-10T07:15:01.881000Z",
-#                 "@source_host":"li511-207",
-#                 "@source_path":"/var/log/syslog",
-#                 "@message":"Oct 10 07:15:01 li511-207 CRON[11531]: (munin) CMD (if [ -x /usr/bin/munin-cron ]; then /usr/bin/munin-cron; fi)"}
-
-                log.debug('sending %s' % filename)
-                for line in lines:
-                    payload = json.dumps({ '@source': "file://{0}{1}".format('app1', filename),
-                        '@type': 'linux-syslog',
-                        '@tags': [],
-                        '@fields': {},
-                        '@timestamp': timestamp,
-                        '@source_host': 'app1',
-                        '@source_path': filename,
-                        '@message': line.strip(os.linesep),
-                        })
-
-                    sender.send(payload)
-#                    log.debug(sender.recv())
-
-            except:
-                log.error('Error during send() - exiting', exc_info=True)
-                break
+            time.sleep(1)
 
     log.info('done')
 
@@ -295,15 +286,7 @@ def watcher(options, events):
             log.error('File and/or path does not exist: %s' % file)
 
     observer.start()
-
-    try:
-        while True:
-            time.sleep(5)
-    except KeyboardInterrupt:
-        observer.stop()
-
     observer.join()
-
 
 
 _defaultOptions = { 'config':      ('-c', '--config',     None,  'Configuration file'),
@@ -323,10 +306,8 @@ if __name__ == '__main__':
     log.info('Starting')
 
     if options.master:
-        Process(name='rp-master', target=zmqReceiver, args=(options, inbound)).start()
+        Process(name='receiver', target=zmqReceiver, args=(options, inbound)).start()
 
     if options.client:
-        Process(name='rp-client', target=zmqSender, args=(options, outbound)).start()
-
+        Process(name='sender', target=zmqSender, args=(options, outbound)).start()
         Process(name='watcher', target=watcher, args=(options, outbound)).start()
-

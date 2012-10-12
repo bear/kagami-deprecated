@@ -1,14 +1,34 @@
 kagami
 ======
 
-tool to ship logstash events to a remote logstash server using zeromq
+Listen to a set of defined log files for any update events and ship
+them to a remote Logstash server using ZeroMQ as the transport.
 
-prototype code to see how easy it was to tail the content of a logfile and ship
-the data off to logstash using it's json format
+Sample kagami.cfg
 
-the file tail code is borrowed/hacked from Beaver
+    { "debug": true,
+      "address": "127.0.0.1",
+      "client": true,
+      "files":  ["/private/var/log/system.log"],
+    }
 
-bear
-Mike Taylor
-bear@code-bear.com
-bear@andyet.net
+Logstash Config requires a ZeroMQ Input item, e.g.
+
+input {
+  zeromq {
+    type => "shipper-input"
+    mode => "server"
+    topology => "pushpull"
+    address => "tcp://*:5556"
+  }
+}
+
+
+Requires
+--------
+watchdog    http://pypi.python.org/pypi/watchdog
+            http://github.com/gorakhargosh/watchdog
+
+pyzmq       http://pypi.python.org/pypi/pyzmq
+            https://github.com/zeromq/pyzmq
+
