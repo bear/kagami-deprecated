@@ -31,6 +31,7 @@ import os,sys
 import json
 import time
 import types
+import signal
 import logging
 import datetime
 
@@ -65,6 +66,11 @@ _echoHandler.setFormatter(_echoFormatter)
 log.addHandler(_echoHandler)
 log.setLevel(logging.INFO)
 
+
+def handleSIGTERM(signum, frame):
+    raise KeyboardInterrupt
+
+signal.signal(signal.SIGTERM, handleSIGTERM)
 
 def loadConfig(filename):
     result = {}
@@ -306,9 +312,20 @@ if __name__ == '__main__':
 
     log.info('Starting')
 
+    pList = []
+
     if options.master:
-        Process(name='receiver', target=zmqReceiver, args=(options, inbound)).start()
+        pList.append(Process(name='receiver', target=zmqReceiver, args=(options, inbound)))
 
     if options.client:
-        Process(name='sender', target=zmqSender, args=(options, outbound)).start()
-        Process(name='watcher', target=watcher, args=(options, outbound)).start()
+        pList.append(Process(name='sender', target=zmqSender, args=(options, outbound)))
+        pList.append(Process(name='watcher', target=watcher, args=(options, outbound)))
+
+    try:
+        for p in pList:
+            p.daemon = True
+            p.start()
+            p.join()
+
+    except KeyboardInterrupt:
+        log.info('SIGTERM event - exiting')
