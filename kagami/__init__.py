@@ -17,8 +17,6 @@ import types
 import logging
 
 from optparse import OptionParser
-from logging.handlers import RotatingFileHandler
-from multiprocessing import Process, Queue
 
 
 _ourPath = os.getcwd()
@@ -52,7 +50,7 @@ def initOptions(defaults=None, params=None):
                        'debug':   ('-d', '--debug',   False, 'Enable Debug'),
                        'logpath': ('-l', '--logpath', '',    'Path where log file is to be written'),
                        'verbose': ('-v', '--verbose', False, 'show extra output from remote commands'),
-                       }
+                     }
 
     if params is not None:
         for key in params:
@@ -109,10 +107,10 @@ def initOptions(defaults=None, params=None):
     return options
 
 def initLogs(options, chatty=True, loglevel=logging.INFO):
-    """ Initialize logging according to desired options
+    """ Initialize logging
     """
     if options.logpath is not None:
-        fileHandler   = RotatingFileHandler(os.path.join(options.logpath, '%s.log' % _ourName), maxBytes=1000000, backupCount=99)
+        fileHandler   = FileHandler(os.path.join(options.logpath, '%s.log' % _ourName))
         fileFormatter = logging.Formatter('%(asctime)s %(levelname)-7s %(processName)s: %(message)s')
 
         fileHandler.setFormatter(fileFormatter)
@@ -138,52 +136,3 @@ def initLogs(options, chatty=True, loglevel=logging.INFO):
         log.info('debug level is on')
     else:
         log.setLevel(loglevel)
-
-
-
-class Worker(self):
-    def __init__(self, config, options):
-        self.config = config
-
-        if 'type' not in config:
-            raise KagamiError('The worker definition must include a worker "type"')
-        if 'id' not in config:
-            raise KagamiError('The worker definition must include a worker "id"')
-
-        self.type = config['type'].lower()
-        self.name = config['id'].lower()
-
-
-def configWorkers(options):
-    workers = {}
-    if options.workers is not None:
-        for item in options.workers:
-            worker = Worker(item, options)
-            if 'type' not in worker:
-                log.error('Worker definition must include a type item')
-                continue
-            worker['type'] = worker['type'].lower()
-            if 'id' not in worker:
-                log.error('Worker definition must include an ID item')
-                continue
-            worker['key'] = worker['id'].lower()
-            if worker['key'] in options.workers:
-                log.error('Worker IDs must be unique: %s already present' % worker['id'])
-                continue
-            if worker['type'] not in ('watch', 'logstash'):
-                log.error('Worker type %s is not a valid type' % worker['type'])
-                continue
-            worker['events']       = Queue()
-            worker['sinks']        = []
-            worker['processes']    = []
-            workers[worker['key']] = worker
-
-        for key in workers:
-            worker = workers[key]
-            if 'output' in worker:
-                for target in worker['output']:
-                    target = target.lower()
-                    if target in workers:
-                        worker['sinks'].append(workers[target]['events'])
-
-    return workers
