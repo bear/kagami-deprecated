@@ -1,6 +1,8 @@
 kagami
 ======
 
+In Japanese kagami is mirror (or at least that is what I hope my googling told me.)
+
 Listen to a set of defined log files for any update events and ship
 them to a remote Logstash server using ZeroMQ as the transport.
 
